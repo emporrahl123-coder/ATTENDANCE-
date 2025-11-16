@@ -1,0 +1,36 @@
+import { Injectable, Inject } from '@nestjs/common';
+import { Repository } from 'typeorm';
+import { SessionEntity } from './sessions.entity';
+import { InjectRepository } from '@nestjs/typeorm';
+import { makeToken } from './qr.util';
+import { SessionToken } from './session-token.entity';
+
+@Injectable()
+export class SessionsService {
+  constructor(
+    @InjectRepository(SessionEntity) private sessRepo: Repository<SessionEntity>,
+    @InjectRepository(SessionToken) private tokenRepo: Repository<SessionToken>,
+    @Inject('REDIS_CLIENT') private redisClient: any
+  ) {}
+
+  async createSession(payload: Partial<SessionEntity>) {
+    const s = this.sessRepo.create(payload);
+    return this.sessRepo.save(s);
+  }
+
+  async generateQrForSession(sessionId: string, ttlSec = 15) {
+    const token = makeToken(sessionId);
+    const expiresAt = new Date(Date.now() + ttlSec * 1000);
+    await this.tokenRepo.save({ token, session_id: sessionId, expires_at: expiresAt, used: false });
+    // Also store in Redis for fast invalidation
+    await this.redisClient.setex(`qr:${token}`, ttlSec, sessionId);
+    return { token, expiresAt };
+  }
+
+  async verifyStoredToken(token: string) {
+    const row = await this.tokenRepo.findOne({ where: { token } });
+    if (!row) return false;
+    if (new Date() > row.expires_at) return false;
+    return true;
+  }
+}
